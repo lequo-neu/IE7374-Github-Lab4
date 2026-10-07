@@ -29,19 +29,65 @@ to use Wine feature names and assert that the returned model is a
 GradientBoostingClassifier with the correct hyperparameters. A new test,
 test_evaluate_model, was added to run an end-to-end train/evaluate cycle on the
 real Wine data and assert that both metric keys are present, both values fall
-between 0 and 1, and accuracy is at least 0.85 given that GradientBoosting is
-a strong learner on this dataset. All mock tests for GCP interactions were
-preserved unchanged.
+between 0 and 1, and accuracy is at least 0.85. All mock tests for GCP
+interactions were preserved unchanged.
 
 **Pipeline (main.yml)**
 
-The original workflow built and pushed the Docker image in a single step with no
-validation between the two operations. The build and push steps were separated, and
-a new "Verify Docker image" step was added between them. This step starts the
-container twice: once to confirm Python is available and reports its version, and
-once to import all runtime dependencies and confirm their versions are resolvable
-inside the container. The pipeline only proceeds to push if both checks pass,
-which prevents a broken image from reaching the registry.
+The build and push steps were separated into two distinct steps, and a
+"Verify Docker image" step was added between them.
+
+## Advanced Extension — Docker Image Verification Before Registry Push
+
+**Why this was chosen**
+
+In the original workflow, the Docker image was built and pushed to Artifact
+Registry in a single step. This means there was no point at which the image
+was known to work before it was promoted to the registry as the new latest.
+If the Dockerfile had a broken dependency, a missing module import, or a
+runtime configuration error, the push would succeed and the registry would
+contain a broken image tagged as latest. Anyone pulling that image to run
+predictions or retrain would pull a container that fails on startup, with
+no way to know from the registry itself that the image was broken.
+
+This is a well-known anti-pattern in container-based deployments. The standard
+response is to introduce a promotion gate: build the image, verify it works in
+a controlled environment, and only promote it to the registry if verification
+passes. This mirrors the pattern used in mature CI/CD systems, where artifacts
+pass through a staging check before reaching production. In the context of this
+lab, adding that gate between build and push transforms the pipeline from a
+simple build-and-ship script into a system with a defined quality checkpoint.
+
+**How it works**
+
+After the Docker build step completes, the pipeline starts the newly built
+container twice before touching the registry. The first run executes
+python --version inside the container to confirm that Python is available and
+responds at the expected entrypoint. The second run executes a short import
+script that attempts to import sklearn, joblib, pandas, and
+google.cloud.storage, printing each library's installed version to the log.
+If any import fails because a package was not installed correctly during the
+Docker build, the container exits with a non-zero code, the verification step
+fails, and the pipeline stops before reaching the push step.
+
+The two checks are deliberately lightweight. They do not run the full training
+script inside the container because that would require GCP credentials and a
+real GCS bucket to be available in the verification environment, which would
+add significant complexity. The goal is to verify the container's environment,
+not to replicate the full training job. Checking that Python launches and that
+every runtime dependency is importable is sufficient to rule out the most common
+category of container failures: broken builds where a package was silently
+omitted or installed incorrectly.
+
+**What it produces**
+
+Every pipeline run that reaches the push step has passed a live container check.
+The verification step's log shows the exact library versions installed inside
+the running container, which serves as a manifest of the image's environment
+at the time of promotion. If a future run fails at verification, the log
+pinpoints exactly which library caused the failure without needing to pull
+the broken image and inspect it manually. The registry only ever receives
+images that are confirmed to start and respond correctly.
 
 ## Prerequisites
 
