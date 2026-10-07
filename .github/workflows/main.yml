@@ -65,11 +65,31 @@ jobs:
         ")
         echo "MODEL_VERSION=$VERSION" >> $GITHUB_ENV
 
-    - name: Build and Push Docker image
+    - name: Build Docker image
       env:
         IMAGE_NAME: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY_NAME }}/model-image
       run: |
         docker build -t ${IMAGE_NAME}:${{ env.MODEL_VERSION }} .
+
+    - name: Verify Docker image
+      env:
+        IMAGE_NAME: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY_NAME }}/model-image
+      run: |
+        echo "Verifying Python environment inside the container..."
+        docker run --rm ${IMAGE_NAME}:${{ env.MODEL_VERSION }} python --version
+        docker run --rm ${IMAGE_NAME}:${{ env.MODEL_VERSION }} python -c "
+        import sklearn, joblib, pandas, google.cloud.storage
+        from sklearn.ensemble import GradientBoostingClassifier
+        print('scikit-learn:', sklearn.__version__)
+        print('joblib:', joblib.__version__)
+        print('pandas:', pandas.__version__)
+        print('All dependencies verified inside container.')
+        "
+
+    - name: Push Docker image to Artifact Registry
+      env:
+        IMAGE_NAME: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY_NAME }}/model-image
+      run: |
         docker push ${IMAGE_NAME}:${{ env.MODEL_VERSION }}
         docker tag ${IMAGE_NAME}:${{ env.MODEL_VERSION }} ${IMAGE_NAME}:latest
         docker push ${IMAGE_NAME}:latest
